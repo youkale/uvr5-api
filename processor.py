@@ -98,26 +98,115 @@ class UVRProcessor:
             raise
 
     def _download_audio(self, audio_url, task_uuid):
-        """Download audio file from URL"""
+        """Download audio file from URL with optimized performance"""
+        temp_path = None
         try:
             logger.info(f"[{task_uuid}] Downloading audio from {audio_url}")
+            start_time = time.time()
 
-            response = requests.get(audio_url, stream=True, timeout=60)
-            response.raise_for_status()
+            # 使用更大的超时时间和优化的请求配置
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'UVR-API/1.0',
+                'Accept': '*/*',
+                'Connection': 'keep-alive'
+            })
 
-            # Get file extension from URL or default to .wav
-            ext = os.path.splitext(audio_url.split('?')[0])[1] or '.wav'
-            temp_path = os.path.join(config.TEMP_DIR, f"{task_uuid}_input{ext}")
+            # 尝试最多3次
+            max_retries = 3
+            last_error = None
 
-            with open(temp_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        logger.info(f"[{task_uuid}] Retry attempt {attempt + 1}/{max_retries}")
+                        time.sleep(2 ** attempt)  # 指数退避: 2s, 4s
 
-            logger.info(f"[{task_uuid}] Audio downloaded: {temp_path}")
-            return temp_path
+                    # 发送请求，使用流式下载
+                    response = session.get(
+                        audio_url,
+                        stream=True,
+                        timeout=(10, 300),  # (连接超时, 读取超时)
+                        allow_redirects=True
+                    )
+                    response.raise_for_status()
+
+                    # 获取文件大小
+                    total_size = int(response.headers.get('content-length', 0))
+                    if total_size > 0:
+                        total_mb = total_size / (1024 * 1024)
+                        logger.info(f"[{task_uuid}] File size: {total_mb:.2f} MB")
+
+                    # 获取文件扩展名
+                    ext = os.path.splitext(audio_url.split('?')[0])[1] or '.wav'
+                    temp_path = os.path.join(config.TEMP_DIR, f"{task_uuid}_input{ext}")
+
+                    # 使用更大的缓冲区下载文件
+                    downloaded = 0
+                    chunk_size = 1024 * 1024  # 1MB chunks for better performance
+                    last_log_time = time.time()
+
+                    with open(temp_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            if chunk:  # 过滤掉 keep-alive 的空块
+                                f.write(chunk)
+                                downloaded += len(chunk)
+
+                                # 每2秒记录一次进度
+                                current_time = time.time()
+                                if total_size > 0 and (current_time - last_log_time) >= 2:
+                                    percent = (downloaded / total_size) * 100
+                                    speed = downloaded / (current_time - start_time) / (1024 * 1024)  # MB/s
+                                    logger.info(f"[{task_uuid}] Download progress: {percent:.1f}% ({speed:.2f} MB/s)")
+                                    last_log_time = current_time
+
+                    # 验证下载的文件
+                    if os.path.exists(temp_path):
+                        file_size = os.path.getsize(temp_path)
+                        if total_size > 0 and file_size != total_size:
+                            raise Exception(f"Downloaded file size mismatch: {file_size} != {total_size}")
+
+                        elapsed = time.time() - start_time
+                        speed = file_size / elapsed / (1024 * 1024) if elapsed > 0 else 0
+                        logger.info(f"[{task_uuid}] Audio downloaded successfully: {temp_path}")
+                        logger.info(f"[{task_uuid}] Download completed in {elapsed:.1f}s (avg {speed:.2f} MB/s)")
+                        return temp_path
+                    else:
+                        raise Exception("Downloaded file not found")
+
+                except (requests.exceptions.RequestException, IOError) as e:
+                    last_error = e
+                    logger.warning(f"[{task_uuid}] Download attempt {attempt + 1} failed: {str(e)}")
+                    # 清理不完整的文件
+                    if temp_path and os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except:
+                            pass
+
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        raise
+
+            # 如果所有重试都失败
+            raise last_error if last_error else Exception("Download failed after all retries")
+
         except Exception as e:
             logger.error(f"[{task_uuid}] Download failed: {str(e)}")
+            # 清理失败的文件
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
             raise
+        finally:
+            # 关闭 session
+            try:
+                session.close()
+            except:
+                pass
 
     def _separate_audio(self, input_path, task_uuid):
         """Perform audio separation using UVR"""
