@@ -104,7 +104,7 @@ mkdir -p .pids
 
 # 启动 API 服务器
 echo "1️⃣  启动 API 服务器 (端口 8000)..."
-python app.py > logs/api.log 2>&1 &
+uv run app.py > logs/api.log 2>&1 &
 API_PID=$!
 echo $API_PID > .pids/api.pid
 echo "   PID: $API_PID"
@@ -112,7 +112,7 @@ sleep 2
 
 # 启动音频处理器
 echo "2️⃣  启动音频处理器..."
-python processor.py > logs/processor.log 2>&1 &
+uv run processor.py > logs/processor.log 2>&1 &
 PROCESSOR_PID=$!
 echo $PROCESSOR_PID > .pids/processor.pid
 echo "   PID: $PROCESSOR_PID"
@@ -120,7 +120,7 @@ sleep 2
 
 # 启动 S3 上传器
 echo "3️⃣  启动 S3 上传器..."
-python uploader.py > logs/uploader.log 2>&1 &
+uv run uploader.py > logs/uploader.log 2>&1 &
 UPLOADER_PID=$!
 echo $UPLOADER_PID > .pids/uploader.pid
 echo "   PID: $UPLOADER_PID"
