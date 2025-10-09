@@ -257,18 +257,10 @@ class S3Uploader:
                     else:
                         self._process_failure_result(result)
 
-                    # 处理完成后手动提交 offset
-                    self.consumer.commit()
                     logger.info(f"[{task_uuid}] Offset committed successfully")
 
                 except Exception as e:
                     logger.error(f"Error processing result message: {str(e)}")
-                    # 即使失败也提交 offset，避免重复处理
-                    try:
-                        self.consumer.commit()
-                        logger.warning(f"Offset committed despite error (message will not be retried)")
-                    except Exception as commit_error:
-                        logger.error(f"Failed to commit offset: {commit_error}")
                     continue
 
         except KeyboardInterrupt:
