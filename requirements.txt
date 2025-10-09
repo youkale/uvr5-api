@@ -1,0 +1,9 @@
+flask>=3.0.0
+flask-httpauth>=4.8.0
+kafka-python>=2.0.2
+boto3>=1.34.0
+requests>=2.31.0
+audio-separator>=0.17.0
+python-dotenv>=1.0.0
+gunicorn>=21.2.0
+tqdm>=4.66.0
