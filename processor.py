@@ -44,11 +44,26 @@ class UVRProcessor:
                 model_file_dir=config.MODEL_FILE_DIR,
                 output_dir=config.OUTPUT_DIR
             )
+
+            # 确保模型名称包含 .onnx 扩展名
+            model_filename = config.MODEL_NAME
+            if not model_filename.endswith('.onnx'):
+                model_filename = f"{model_filename}.onnx"
+
+            # 检查模型文件是否存在
+            model_path = os.path.join(config.MODEL_FILE_DIR, model_filename)
+            if not os.path.exists(model_path):
+                logger.warning(f"Model file not found: {model_path}")
+                logger.info("Attempting to download model automatically...")
+                # audio-separator 会自动下载模型
+
             # Load the specific model
-            self.separator.load_model(config.MODEL_NAME)
+            self.separator.load_model(model_filename)
             logger.info("UVR model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load UVR model: {str(e)}")
+            logger.error(f"Please ensure model exists at: {config.MODEL_FILE_DIR}/{config.MODEL_NAME}.onnx")
+            logger.error(f"You can download it using: python3 download_models.py")
             raise
 
     def _connect_kafka(self):

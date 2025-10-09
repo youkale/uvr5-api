@@ -9,7 +9,20 @@ import sys
 import argparse
 import requests
 from pathlib import Path
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    print("提示: 安装 tqdm 可以显示下载进度: pip install tqdm")
+
+try:
+    from audio_separator.separator import Separator
+    HAS_AUDIO_SEPARATOR = True
+except ImportError:
+    HAS_AUDIO_SEPARATOR = False
+    print("警告: audio-separator 未安装，将使用手动下载模式")
+
 import config
 
 # 可用的模型列表
@@ -58,16 +71,28 @@ def download_file(url: str, output_path: Path, model_name: str):
         total_size = int(response.headers.get('content-length', 0))
 
         # 创建进度条
-        with open(output_path, 'wb') as f, tqdm(
-            desc=model_name,
-            total=total_size,
-            unit='iB',
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                size = f.write(chunk)
-                pbar.update(size)
+        if HAS_TQDM:
+            with open(output_path, 'wb') as f, tqdm(
+                desc=model_name,
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    size = f.write(chunk)
+                    pbar.update(size)
+        else:
+            # 无进度条模式
+            with open(output_path, 'wb') as f:
+                downloaded = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        print(f"\r   下载进度: {percent:.1f}%", end='', flush=True)
+            print()  # 换行
 
         print(f"✅ {model_name} 下载完成")
         return True
@@ -82,6 +107,36 @@ def download_file(url: str, output_path: Path, model_name: str):
         print(f"❌ 发生错误: {str(e)}")
         if output_path.exists():
             output_path.unlink()
+        return False
+
+
+def download_with_audio_separator(model_name: str, model_dir: Path):
+    """
+    使用 audio-separator 内置功能下载模型
+
+    Args:
+        model_name: 模型名称（不带扩展名）
+        model_dir: 模型目录
+    """
+    try:
+        print(f"\n📥 使用 audio-separator 下载 {model_name}...")
+
+        # 创建 Separator 实例
+        separator = Separator(
+            log_level=30,  # WARNING level
+            model_file_dir=str(model_dir),
+            output_dir=str(model_dir)
+        )
+
+        # 尝试加载模型，如果不存在会自动下载
+        model_filename = model_name if model_name.endswith('.onnx') else f"{model_name}.onnx"
+        separator.load_model(model_filename)
+
+        print(f"✅ {model_name} 下载/加载完成")
+        return True
+
+    except Exception as e:
+        print(f"❌ audio-separator 下载失败: {str(e)}")
         return False
 
 
@@ -116,11 +171,6 @@ def download_model(model_name: str, model_dir: Path, force: bool = False):
         model_dir: 模型目录
         force: 是否强制重新下载
     """
-    if model_name not in AVAILABLE_MODELS:
-        print(f"❌ 未知的模型: {model_name}")
-        print("   使用 --list 查看可用模型")
-        return False
-
     # 检查模型是否已存在
     model_path = model_dir / f"{model_name}.onnx"
     if model_path.exists() and not force:
@@ -128,6 +178,20 @@ def download_model(model_name: str, model_dir: Path, force: bool = False):
         print(f"  路径: {model_path}")
         print(f"  使用 --force 强制重新下载")
         return True
+
+    # 方式1: 优先使用 audio-separator 内置下载（支持更多模型）
+    if HAS_AUDIO_SEPARATOR:
+        if download_with_audio_separator(model_name, model_dir):
+            return True
+        print("   尝试手动下载...")
+
+    # 方式2: 手动下载（仅支持列表中的模型）
+    if model_name not in AVAILABLE_MODELS:
+        print(f"❌ 模型 {model_name} 无法通过手动下载")
+        print(f"   请安装 audio-separator 或使用以下模型之一:")
+        for name in AVAILABLE_MODELS.keys():
+            print(f"   - {name}")
+        return False
 
     # 下载模型
     model_info = AVAILABLE_MODELS[model_name]
