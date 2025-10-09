@@ -79,7 +79,7 @@ class UVRProcessor:
                 auto_offset_reset='latest',
                 enable_auto_commit=False,  # 手动提交，确保处理完成后才提交
                 max_poll_records=1,  # 每次只读取1条消息
-                max_poll_interval_ms=50000
+                max_poll_interval_ms=300000
             )
 
             # Producer for results
@@ -97,115 +97,86 @@ class UVRProcessor:
             raise
 
     def _download_audio(self, audio_url, task_uuid):
-        """Download audio file from URL with optimized performance"""
-        temp_path = None
+        """
+        Download audio from URL to local temporary file
+        Based on: https://raw.githubusercontent.com/youkale/index-tts/refs/heads/main/api_server.py
+        """
         try:
-            logger.info(f"[{task_uuid}] Downloading audio from {audio_url}")
+            logger.info(f"[{task_uuid}] Downloading audio from URL: {audio_url}")
             start_time = time.time()
 
-            # 使用更大的超时时间和优化的请求配置
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'UVR-API/1.0',
-                'Accept': '*/*',
-                'Connection': 'keep-alive'
-            })
+            # Create temp file in temp directory
+            # Keep original extension if available, default to .wav
+            ext = os.path.splitext(audio_url.split('?')[0])[1] or '.wav'
+            filename = f"{task_uuid}_input{ext}"
+            local_path = os.path.join(config.TEMP_DIR, filename)
 
-            # 尝试最多3次
-            max_retries = 3
-            last_error = None
+            # Download the file with streaming and timeout
+            response = requests.get(audio_url, timeout=30, stream=True)
+            response.raise_for_status()
 
-            for attempt in range(max_retries):
-                try:
-                    if attempt > 0:
-                        logger.info(f"[{task_uuid}] Retry attempt {attempt + 1}/{max_retries}")
-                        time.sleep(2 ** attempt)  # 指数退避: 2s, 4s
+            # Check content type to ensure it's audio
+            content_type = response.headers.get('content-type', '')
+            if not any(audio_type in content_type.lower() for audio_type in ['audio', 'wav', 'mp3', 'flac', 'ogg', 'm4a', 'aac']):
+                logger.warning(f"[{task_uuid}] Downloaded file may not be audio: {content_type}")
 
-                    # 发送请求，使用流式下载
-                    response = session.get(
-                        audio_url,
-                        stream=True,
-                        timeout=(10, 300),  # (连接超时, 读取超时)
-                        allow_redirects=True
-                    )
-                    response.raise_for_status()
+            # Get file size for progress tracking
+            total_size = int(response.headers.get('content-length', 0))
+            if total_size > 0:
+                total_mb = total_size / (1024 * 1024)
+                logger.info(f"[{task_uuid}] File size: {total_mb:.2f} MB")
 
-                    # 获取文件大小
-                    total_size = int(response.headers.get('content-length', 0))
-                    if total_size > 0:
-                        total_mb = total_size / (1024 * 1024)
-                        logger.info(f"[{task_uuid}] File size: {total_mb:.2f} MB")
+            # Save to local file with progress tracking
+            downloaded = 0
+            chunk_size = 1024 * 1024  # 1MB chunks
+            last_log_time = start_time
 
-                    # 获取文件扩展名
-                    ext = os.path.splitext(audio_url.split('?')[0])[1] or '.wav'
-                    temp_path = os.path.join(config.TEMP_DIR, f"{task_uuid}_input{ext}")
+            with open(local_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
 
-                    # 使用更大的缓冲区下载文件
-                    downloaded = 0
-                    chunk_size = 1024 * 1024  # 1MB chunks for better performance
-                    last_log_time = time.time()
+                        # Log progress every 2 seconds
+                        current_time = time.time()
+                        if total_size > 0 and (current_time - last_log_time) >= 2:
+                            percent = (downloaded / total_size) * 100
+                            speed = downloaded / (current_time - start_time) / (1024 * 1024)  # MB/s
+                            logger.info(f"[{task_uuid}] Download progress: {percent:.1f}% ({speed:.2f} MB/s)")
+                            last_log_time = current_time
 
-                    with open(temp_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=chunk_size):
-                            if chunk:  # 过滤掉 keep-alive 的空块
-                                f.write(chunk)
-                                downloaded += len(chunk)
+            # Verify download
+            if os.path.exists(local_path):
+                file_size = os.path.getsize(local_path)
+                elapsed = time.time() - start_time
+                speed = file_size / elapsed / (1024 * 1024) if elapsed > 0 else 0
 
-                                # 每2秒记录一次进度
-                                current_time = time.time()
-                                if total_size > 0 and (current_time - last_log_time) >= 2:
-                                    percent = (downloaded / total_size) * 100
-                                    speed = downloaded / (current_time - start_time) / (1024 * 1024)  # MB/s
-                                    logger.info(f"[{task_uuid}] Download progress: {percent:.1f}% ({speed:.2f} MB/s)")
-                                    last_log_time = current_time
+                logger.info(f"[{task_uuid}] Audio downloaded to: {local_path}")
+                logger.info(f"[{task_uuid}] Download completed in {elapsed:.1f}s (avg {speed:.2f} MB/s)")
 
-                    # 验证下载的文件
-                    if os.path.exists(temp_path):
-                        file_size = os.path.getsize(temp_path)
-                        if total_size > 0 and file_size != total_size:
-                            raise Exception(f"Downloaded file size mismatch: {file_size} != {total_size}")
+                return local_path
+            else:
+                raise Exception("Downloaded file not found")
 
-                        elapsed = time.time() - start_time
-                        speed = file_size / elapsed / (1024 * 1024) if elapsed > 0 else 0
-                        logger.info(f"[{task_uuid}] Audio downloaded successfully: {temp_path}")
-                        logger.info(f"[{task_uuid}] Download completed in {elapsed:.1f}s (avg {speed:.2f} MB/s)")
-                        return temp_path
-                    else:
-                        raise Exception("Downloaded file not found")
-
-                except (requests.exceptions.RequestException, IOError) as e:
-                    last_error = e
-                    logger.warning(f"[{task_uuid}] Download attempt {attempt + 1} failed: {str(e)}")
-                    # 清理不完整的文件
-                    if temp_path and os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except:
-                            pass
-
-                    if attempt < max_retries - 1:
-                        continue
-                    else:
-                        raise
-
-            # 如果所有重试都失败
-            raise last_error if last_error else Exception("Download failed after all retries")
-
+        except requests.exceptions.Timeout:
+            logger.error(f"[{task_uuid}] Download timeout: {audio_url}")
+            raise Exception(f"Download timeout after 30 seconds")
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"[{task_uuid}] HTTP error downloading audio: {e}")
+            raise Exception(f"HTTP error: {e.response.status_code if e.response else 'unknown'}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[{task_uuid}] Network error downloading audio: {e}")
+            raise Exception(f"Network error: {str(e)}")
         except Exception as e:
-            logger.error(f"[{task_uuid}] Download failed: {str(e)}")
-            # 清理失败的文件
-            if temp_path and os.path.exists(temp_path):
+            logger.error(f"[{task_uuid}] Failed to download audio: {str(e)}")
+            # Clean up partial file
+            if 'local_path' in locals() and os.path.exists(local_path):
                 try:
-                    os.remove(temp_path)
+                    os.remove(local_path)
+                    logger.info(f"[{task_uuid}] Cleaned up partial download")
                 except:
                     pass
             raise
-        finally:
-            # 关闭 session
-            try:
-                session.close()
-            except:
-                pass
 
     def _separate_audio(self, input_path, task_uuid):
         """Perform audio separation using UVR"""
