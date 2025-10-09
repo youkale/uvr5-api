@@ -1,0 +1,24 @@
+# GPU-accelerated requirements for Linux CUDA environments
+# Use this instead of requirements.txt for GPU support
+
+flask>=3.0.0
+flask-httpauth>=4.8.0
+kafka-python>=2.0.2
+boto3>=1.34.0
+requests>=2.31.0
+audio-separator>=0.17.0
+python-dotenv>=1.0.0
+gunicorn>=21.2.0
+tqdm>=4.66.0
+
+# GPU-accelerated libraries
+onnxruntime-gpu>=1.16.0  # Use onnxruntime-gpu instead of onnxruntime
+torch>=2.0.0             # PyTorch with CUDA support
+
+# Audio processing
+librosa>=0.10.1
+soundfile>=0.12.1
+numpy>=1.24.0,<2.0.0
+
+# Optional: for better performance
+# numba>=0.58.0  # JIT compilation for numerical functions

@@ -47,17 +47,60 @@ class UVRProcessor:
         logger.info(f"Received {sig_name}, initiating graceful shutdown...")
         self.shutdown_flag = True
 
+    def _check_gpu_support(self):
+        """Check if GPU/CUDA is available"""
+        import platform
+
+        is_linux = platform.system() == 'Linux'
+        cuda_available = False
+        gpu_info = "CPU only"
+
+        try:
+            import onnxruntime as ort
+            providers = ort.get_available_providers()
+
+            if 'CUDAExecutionProvider' in providers:
+                cuda_available = True
+                gpu_info = "CUDA available"
+                logger.info("✓ CUDA Execution Provider detected")
+            elif 'TensorrtExecutionProvider' in providers:
+                cuda_available = True
+                gpu_info = "TensorRT available"
+                logger.info("✓ TensorRT Execution Provider detected")
+            else:
+                logger.info("GPU providers not available, using CPU")
+        except Exception as e:
+            logger.warning(f"Failed to check GPU support: {e}")
+
+        return is_linux and cuda_available, gpu_info
+
     def _load_model(self):
-        """Load UVR model - called once on startup"""
+        """Load UVR model - called once on startup (with GPU optimization if available)"""
         try:
             logger.info(f"Loading UVR model: {config.MODEL_NAME}")
             logger.info(f"Model directory: {config.MODEL_FILE_DIR}")
 
-            self.separator = Separator(
-                log_level=logging.INFO,
-                model_file_dir=config.MODEL_FILE_DIR,
-                output_dir=config.OUTPUT_DIR
-            )
+            # Check GPU support
+            use_gpu, gpu_info = self._check_gpu_support()
+            logger.info(f"Hardware acceleration: {gpu_info}")
+
+            # Configure Separator with GPU support if available
+            separator_kwargs = {
+                'log_level': logging.INFO,
+                'model_file_dir': config.MODEL_FILE_DIR,
+                'output_dir': config.OUTPUT_DIR
+            }
+
+            # Enable GPU acceleration if available
+            if use_gpu:
+                logger.info("🚀 Enabling GPU acceleration for audio separation")
+                # audio-separator will automatically use CUDA if onnxruntime-gpu is installed
+                # and CUDAExecutionProvider is available
+                separator_kwargs['enable_cuda'] = True
+            else:
+                logger.info("Running on CPU mode")
+
+            self.separator = Separator(**separator_kwargs)
 
             # 确保模型名称包含 .onnx 扩展名
             model_filename = config.MODEL_NAME
@@ -73,7 +116,12 @@ class UVRProcessor:
 
             # Load the specific model
             self.separator.load_model(model_filename)
-            logger.info("UVR model loaded successfully")
+
+            if use_gpu:
+                logger.info("✅ UVR model loaded successfully with GPU acceleration")
+            else:
+                logger.info("✅ UVR model loaded successfully (CPU mode)")
+
         except Exception as e:
             logger.error(f"Failed to load UVR model: {str(e)}")
             logger.error(f"Please ensure model exists at: {config.MODEL_FILE_DIR}/{config.MODEL_NAME}.onnx")
