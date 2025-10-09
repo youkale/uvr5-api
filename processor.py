@@ -77,7 +77,11 @@ class UVRProcessor:
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
                 auto_offset_reset='latest',
-                enable_auto_commit=True
+                enable_auto_commit=False,  # 使用手动提交以确保消息处理完成
+                max_poll_records=1,  # 每次只读取1条消息
+                max_poll_interval_ms=600000,  # 10分钟，音频处理需要时间
+                session_timeout_ms=60000,
+                heartbeat_interval_ms=10000
             )
 
             # Producer for results
@@ -97,7 +101,7 @@ class UVRProcessor:
     def _download_audio(self, audio_url, task_uuid):
         """
         Download audio from URL to local temporary file
-        Based on: https://raw.githubusercontent.com/youkale/index-tts/refs/heads/main/api_server.py
+        Optimized for better performance
         """
         try:
             logger.info(f"[{task_uuid}] Downloading audio from URL: {audio_url}")
@@ -109,8 +113,16 @@ class UVRProcessor:
             filename = f"{task_uuid}_input{ext}"
             local_path = os.path.join(config.TEMP_DIR, filename)
 
+            # Optimized headers for better compatibility and speed
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive'
+            }
+
             # Download the file with streaming and timeout
-            response = requests.get(audio_url, timeout=30, stream=True)
+            response = requests.get(audio_url, headers=headers, timeout=30, stream=True)
             response.raise_for_status()
 
             # Check content type to ensure it's audio
@@ -126,11 +138,11 @@ class UVRProcessor:
 
             # Save to local file with progress tracking
             downloaded = 0
-            chunk_size = 1024 * 1024  # 1MB chunks
+            chunk_size = 1024 * 1024  # 1MB chunks for optimal performance
             last_log_time = start_time
 
             with open(local_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
+                for chunk in response.iter_content(chunk_size=chunk_size, decode_unicode=False):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
