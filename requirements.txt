@@ -7,3 +7,7 @@ audio-separator>=0.17.0
 python-dotenv>=1.0.0
 gunicorn>=21.2.0
 tqdm>=4.66.0
+onnxruntime>=1.16.0
+librosa>=0.10.1
+soundfile>=0.12.1
+numpy>=1.24.0,<2.0.0
