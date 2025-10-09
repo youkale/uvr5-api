@@ -80,7 +80,7 @@ class S3Uploader:
                 session_timeout_ms=60000,  # 60秒
                 heartbeat_interval_ms=10000  # 10秒
             )
-            
+
             logger.info("Kafka consumer connected for results")
         except Exception as e:
             logger.error(f"Failed to connect to Kafka: {str(e)}")
@@ -259,7 +259,7 @@ class S3Uploader:
                         self._process_success_result(result)
                     else:
                         self._process_failure_result(result)
-                    
+
                     # 处理完成后手动提交 offset
                     self.consumer.commit()
                     logger.info(f"[{task_uuid}] Offset committed successfully")

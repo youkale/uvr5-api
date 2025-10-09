@@ -245,7 +245,7 @@ class UVRProcessor:
 
                     # 处理任务
                     self._process_task(task_data)
-                    
+
                     # 处理成功后手动提交 offset
                     self.consumer.commit()
                     logger.info(f"[{task_uuid}] Offset committed successfully")
