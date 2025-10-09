@@ -8,6 +8,8 @@ import os
 import json
 import logging
 import time
+import signal
+import sys
 import requests
 import tempfile
 from kafka import KafkaConsumer, KafkaProducer
@@ -23,15 +25,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class UVRProcessor:
-    """UVR audio separation processor"""
+    """UVR audio separation processor with graceful shutdown"""
 
     def __init__(self):
         """Initialize UVR processor with model loaded once"""
         self.separator = None
-        self._load_model()
         self.consumer = None
         self.producer = None
+        self.shutdown_flag = False
+
+        # 注册信号处理器用于优雅关闭
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+        self._load_model()
         self._connect_kafka()
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
+        logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+        self.shutdown_flag = True
 
     def _load_model(self):
         """Load UVR model - called once on startup"""
@@ -218,6 +232,11 @@ class UVRProcessor:
 
         try:
             for message in self.consumer:
+                # 检查关闭标志
+                if self.shutdown_flag:
+                    logger.info("Shutdown flag set, stopping message consumption")
+                    break
+
                 try:
                     task_data = message.value
                     task_uuid = task_data.get('task_uuid', 'unknown')
@@ -226,27 +245,44 @@ class UVRProcessor:
                     # 处理任务
                     self._process_task(task_data)
 
-                    logger.info(f"[{task_uuid}] Offset committed successfully")
+                    logger.info(f"[{task_uuid}] Task completed successfully")
 
                 except Exception as e:
                     logger.error(f"Error processing message: {str(e)}")
                     continue
 
-        except KeyboardInterrupt:
-            logger.info("Processor interrupted by user")
         except Exception as e:
-            logger.error(f"Processor error: {str(e)}")
-            raise
+            if not self.shutdown_flag:
+                logger.error(f"Processor error: {str(e)}")
+                raise
         finally:
+            logger.info("Processor shutting down...")
             self.close()
 
     def close(self):
-        """Close connections"""
+        """Close connections gracefully"""
+        logger.info("Closing Kafka connections...")
+
+        # 关闭 consumer
         if self.consumer:
-            self.consumer.close()
+            try:
+                logger.info("Closing Kafka consumer...")
+                self.consumer.close()
+                logger.info("Kafka consumer closed")
+            except Exception as e:
+                logger.error(f"Error closing consumer: {e}")
+
+        # Flush 并关闭 producer
         if self.producer:
-            self.producer.close()
-        logger.info("Processor connections closed")
+            try:
+                logger.info("Flushing and closing Kafka producer...")
+                self.producer.flush(timeout=10)
+                self.producer.close()
+                logger.info("Kafka producer closed")
+            except Exception as e:
+                logger.error(f"Error closing producer: {e}")
+
+        logger.info("Processor shutdown complete")
 
 if __name__ == '__main__':
     processor = UVRProcessor()

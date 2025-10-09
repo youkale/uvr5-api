@@ -8,6 +8,8 @@ import os
 import json
 import logging
 import time
+import signal
+import sys
 import requests
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -22,14 +24,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class S3Uploader:
-    """S3 uploader and webhook notifier"""
+    """S3 uploader and webhook notifier with graceful shutdown"""
 
     def __init__(self):
         """Initialize S3 client and Kafka consumer"""
         self.s3_client = None
         self.consumer = None
+        self.shutdown_flag = False
+
+        # 注册信号处理器用于优雅关闭
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
         self._init_s3()
         self._connect_kafka()
+
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
+        logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+        self.shutdown_flag = True
 
     def _init_s3(self):
         """Initialize S3-compatible client (支持 AWS S3, Cloudflare R2, MinIO 等)"""
@@ -245,6 +259,11 @@ class S3Uploader:
 
         try:
             for message in self.consumer:
+                # 检查关闭标志
+                if self.shutdown_flag:
+                    logger.info("Shutdown flag set, stopping message consumption")
+                    break
+
                 try:
                     result = message.value
                     task_uuid = result.get('task_uuid', 'unknown')
@@ -257,25 +276,34 @@ class S3Uploader:
                     else:
                         self._process_failure_result(result)
 
-                    logger.info(f"[{task_uuid}] Offset committed successfully")
+                    logger.info(f"[{task_uuid}] Result processed successfully")
 
                 except Exception as e:
                     logger.error(f"Error processing result message: {str(e)}")
                     continue
 
-        except KeyboardInterrupt:
-            logger.info("Uploader interrupted by user")
         except Exception as e:
-            logger.error(f"Uploader error: {str(e)}")
-            raise
+            if not self.shutdown_flag:
+                logger.error(f"Uploader error: {str(e)}")
+                raise
         finally:
+            logger.info("Uploader shutting down...")
             self.close()
 
     def close(self):
-        """Close connections"""
+        """Close connections gracefully"""
+        logger.info("Closing Kafka connections...")
+
+        # 关闭 consumer
         if self.consumer:
-            self.consumer.close()
-        logger.info("Uploader connections closed")
+            try:
+                logger.info("Closing Kafka consumer...")
+                self.consumer.close()
+                logger.info("Kafka consumer closed")
+            except Exception as e:
+                logger.error(f"Error closing consumer: {e}")
+
+        logger.info("Uploader shutdown complete")
 
 if __name__ == '__main__':
     uploader = S3Uploader()
