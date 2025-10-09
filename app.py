@@ -4,10 +4,12 @@ UVR Audio Separation API Server
 Flask-based REST API with Basic Auth and Kafka integration
 """
 
+import os
 import uuid
 import time
 import json
 import logging
+import requests
 from flask import Flask, request, jsonify
 from flask_httpauth import HTTPBasicAuth
 from kafka import KafkaProducer
@@ -54,6 +56,39 @@ def verify_password(username, password):
     if username == config.BASIC_AUTH_USERNAME and password == config.BASIC_AUTH_PASSWORD:
         return username
     return None
+
+def download_audio(audio_url, task_uuid):
+    """
+    Download audio from URL to local temporary file
+    在 API 阶段下载，提前发现错误
+    """
+    try:
+        logger.info(f"[{task_uuid}] Downloading audio from URL: {audio_url}")
+
+        # Create temp file in temp directory
+        filename = f"{task_uuid}_input.wav"
+        local_path = os.path.join(config.TEMP_DIR, filename)
+
+        # Download the file
+        response = requests.get(audio_url, timeout=30, stream=True)
+        response.raise_for_status()
+
+        # Check content type
+        content_type = response.headers.get('content-type', '')
+        if not any(audio_type in content_type.lower() for audio_type in ['audio', 'wav', 'mp3', 'flac']):
+            logger.warning(f"[{task_uuid}] Downloaded file may not be audio: {content_type}")
+
+        # Save to local file
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        logger.info(f"[{task_uuid}] Audio downloaded to: {local_path}")
+        return local_path
+
+    except Exception as e:
+        logger.error(f"[{task_uuid}] Failed to download audio from URL {audio_url}: {e}")
+        raise Exception(f"Failed to download audio: {str(e)}")
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -112,10 +147,20 @@ def generate():
     # Generate task UUID
     task_uuid = str(uuid.uuid4())
 
-    # Create task data
+    # Download audio file (前置到 API 阶段)
+    try:
+        local_audio_path = download_audio(audio_url, task_uuid)
+    except Exception as e:
+        logger.error(f"[{task_uuid}] Download failed: {str(e)}")
+        return jsonify({
+            "error": "Failed to download audio file",
+            "details": str(e)
+        }), 400
+
+    # Create task data (使用本地路径而不是 URL)
     task_data = {
         'task_uuid': task_uuid,
-        'audio_url': audio_url,
+        'audio_path': local_audio_path,  # 改为本地路径
         'hook_url': hook_url,
         'timestamp': int(time.time())
     }

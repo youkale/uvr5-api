@@ -94,35 +94,9 @@ class UVRProcessor:
             logger.error(f"Failed to connect to Kafka: {str(e)}")
             raise
 
-    def _download_audio(self, audio_url, task_uuid):
-        """Download audio from URL to local temporary file"""
-        try:
-            logger.info(f"Downloading audio from URL: {audio_url}")
-
-            # Create temp file in temp directory
-            filename = f"{task_uuid}_input.wav"
-            local_path = os.path.join(config.TEMP_DIR, filename)
-
-            # Download the file
-            response = requests.get(audio_url, timeout=30, stream=True)
-            response.raise_for_status()
-
-            # Check content type
-            content_type = response.headers.get('content-type', '')
-            if not any(audio_type in content_type.lower() for audio_type in ['audio', 'wav', 'mp3', 'flac']):
-                logger.warning(f"Downloaded file may not be audio: {content_type}")
-
-            # Save to local file
-            with open(local_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
-            logger.info(f"Audio downloaded to: {local_path}")
-            return local_path
-
-        except Exception as e:
-            logger.error(f"Failed to download audio from URL {audio_url}: {e}")
-            raise Exception(f"Failed to download audio: {str(e)}")
+    # 下载功能已移到 API 层，此方法不再需要
+    # def _download_audio(self, audio_url, task_uuid):
+    #     已移至 app.py 的 download_audio() 函数
 
     def _separate_audio(self, input_path, task_uuid):
         """Perform audio separation using UVR"""
@@ -186,21 +160,22 @@ class UVRProcessor:
     def _process_task(self, task_data):
         """Process a single task"""
         task_uuid = task_data['task_uuid']
-        audio_url = task_data['audio_url']
+        audio_path = task_data['audio_path']  # 改为直接使用本地路径
         hook_url = task_data['hook_url']
 
-        input_path = None
         vocals_path = None
         instrumental_path = None
 
         try:
             logger.info(f"[{task_uuid}] Processing task")
+            logger.info(f"[{task_uuid}] Audio file: {audio_path}")
 
-            # Download audio
-            input_path = self._download_audio(audio_url, task_uuid)
+            # 验证音频文件存在
+            if not os.path.exists(audio_path):
+                raise Exception(f"Audio file not found: {audio_path}")
 
-            # Separate audio
-            vocals_path, instrumental_path = self._separate_audio(input_path, task_uuid)
+            # Separate audio (直接使用已下载的文件)
+            vocals_path, instrumental_path = self._separate_audio(audio_path, task_uuid)
 
             # Send success result to result topic
             result = {
@@ -230,9 +205,9 @@ class UVRProcessor:
 
         finally:
             # Clean up input file
-            if input_path and os.path.exists(input_path):
+            if audio_path and os.path.exists(audio_path):
                 try:
-                    os.remove(input_path)
+                    os.remove(audio_path)
                     logger.info(f"[{task_uuid}] Cleaned up input file")
                 except Exception as e:
                     logger.warning(f"[{task_uuid}] Failed to cleanup input file: {e}")
