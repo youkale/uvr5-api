@@ -132,20 +132,43 @@ class UVRProcessor:
             instrumental_path = None
 
             for file_path in output_files:
-                filename = os.path.basename(file_path).lower()
+                # 确保使用完整路径
+                # audio-separator 返回的可能是相对路径或文件名
+                if not os.path.isabs(file_path):
+                    # 如果是相对路径，组合输出目录
+                    full_path = os.path.join(config.OUTPUT_DIR, file_path)
+                    if not os.path.exists(full_path):
+                        # 尝试直接使用返回的路径
+                        full_path = file_path
+                else:
+                    full_path = file_path
+
+                # 检查文件名判断类型
+                filename = os.path.basename(full_path).lower()
                 if 'vocals' in filename or 'voice' in filename:
-                    vocals_path = file_path
+                    vocals_path = full_path
                 elif 'instrumental' in filename or 'inst' in filename:
-                    instrumental_path = file_path
+                    instrumental_path = full_path
 
             # If not found by name, use order
             if not vocals_path and len(output_files) > 0:
                 vocals_path = output_files[0]
+                if not os.path.isabs(vocals_path):
+                    vocals_path = os.path.join(config.OUTPUT_DIR, vocals_path)
+
             if not instrumental_path and len(output_files) > 1:
                 instrumental_path = output_files[1]
+                if not os.path.isabs(instrumental_path):
+                    instrumental_path = os.path.join(config.OUTPUT_DIR, instrumental_path)
 
-            if not vocals_path or not instrumental_path:
-                raise Exception("Failed to generate both vocals and instrumental tracks")
+            # 验证文件存在
+            if not vocals_path or not os.path.exists(vocals_path):
+                raise Exception(f"Vocals file not found: {vocals_path}")
+            if not instrumental_path or not os.path.exists(instrumental_path):
+                raise Exception(f"Instrumental file not found: {instrumental_path}")
+
+            logger.info(f"[{task_uuid}] Vocals: {vocals_path}")
+            logger.info(f"[{task_uuid}] Instrumental: {instrumental_path}")
 
             return vocals_path, instrumental_path
 
