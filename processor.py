@@ -99,94 +99,34 @@ class UVRProcessor:
             raise
 
     def _download_audio(self, audio_url, task_uuid):
-        """
-        Download audio from URL to local temporary file
-        Optimized for better performance
-        """
+        """Download audio from URL to local temporary file"""
         try:
-            logger.info(f"[{task_uuid}] Downloading audio from URL: {audio_url}")
-            start_time = time.time()
+            logger.info(f"Downloading audio from URL: {audio_url}")
 
             # Create temp file in temp directory
-            # Keep original extension if available, default to .wav
-            ext = os.path.splitext(audio_url.split('?')[0])[1] or '.wav'
-            filename = f"{task_uuid}_input{ext}"
+            filename = f"{task_uuid}_input.wav"
             local_path = os.path.join(config.TEMP_DIR, filename)
 
-            # Optimized headers for better compatibility and speed
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                'Accept': '*/*',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive'
-            }
-
-            # Download the file with streaming and timeout
-            response = requests.get(audio_url, headers=headers, timeout=30, stream=True)
+            # Download the file
+            response = requests.get(audio_url, timeout=30, stream=True)
             response.raise_for_status()
 
-            # Check content type to ensure it's audio
+            # Check content type
             content_type = response.headers.get('content-type', '')
-            if not any(audio_type in content_type.lower() for audio_type in ['audio', 'wav', 'mp3', 'flac', 'ogg', 'm4a', 'aac']):
-                logger.warning(f"[{task_uuid}] Downloaded file may not be audio: {content_type}")
+            if not any(audio_type in content_type.lower() for audio_type in ['audio', 'wav', 'mp3', 'flac']):
+                logger.warning(f"Downloaded file may not be audio: {content_type}")
 
-            # Get file size for progress tracking
-            total_size = int(response.headers.get('content-length', 0))
-            if total_size > 0:
-                total_mb = total_size / (1024 * 1024)
-                logger.info(f"[{task_uuid}] File size: {total_mb:.2f} MB")
-
-            # Save to local file with progress tracking
-            downloaded = 0
-            chunk_size = 1024 * 1024  # 1MB chunks for optimal performance
-            last_log_time = start_time
-
+            # Save to local file
             with open(local_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=chunk_size, decode_unicode=False):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
-                        # Log progress every 2 seconds
-                        current_time = time.time()
-                        if total_size > 0 and (current_time - last_log_time) >= 2:
-                            percent = (downloaded / total_size) * 100
-                            speed = downloaded / (current_time - start_time) / (1024 * 1024)  # MB/s
-                            logger.info(f"[{task_uuid}] Download progress: {percent:.1f}% ({speed:.2f} MB/s)")
-                            last_log_time = current_time
+            logger.info(f"Audio downloaded to: {local_path}")
+            return local_path
 
-            # Verify download
-            if os.path.exists(local_path):
-                file_size = os.path.getsize(local_path)
-                elapsed = time.time() - start_time
-                speed = file_size / elapsed / (1024 * 1024) if elapsed > 0 else 0
-
-                logger.info(f"[{task_uuid}] Audio downloaded to: {local_path}")
-                logger.info(f"[{task_uuid}] Download completed in {elapsed:.1f}s (avg {speed:.2f} MB/s)")
-
-                return local_path
-            else:
-                raise Exception("Downloaded file not found")
-
-        except requests.exceptions.Timeout:
-            logger.error(f"[{task_uuid}] Download timeout: {audio_url}")
-            raise Exception(f"Download timeout after 30 seconds")
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"[{task_uuid}] HTTP error downloading audio: {e}")
-            raise Exception(f"HTTP error: {e.response.status_code if e.response else 'unknown'}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"[{task_uuid}] Network error downloading audio: {e}")
-            raise Exception(f"Network error: {str(e)}")
         except Exception as e:
-            logger.error(f"[{task_uuid}] Failed to download audio: {str(e)}")
-            # Clean up partial file
-            if 'local_path' in locals() and os.path.exists(local_path):
-                try:
-                    os.remove(local_path)
-                    logger.info(f"[{task_uuid}] Cleaned up partial download")
-                except:
-                    pass
-            raise
+            logger.error(f"Failed to download audio from URL {audio_url}: {e}")
+            raise Exception(f"Failed to download audio: {str(e)}")
 
     def _separate_audio(self, input_path, task_uuid):
         """Perform audio separation using UVR"""
