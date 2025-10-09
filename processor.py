@@ -77,10 +77,9 @@ class UVRProcessor:
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
                 auto_offset_reset='latest',
-                enable_auto_commit=False,  # 改为手动提交，确保处理完成后才提交
-                max_poll_interval_ms=600000,  # 10分钟，处理音频可能需要较长时间
-                session_timeout_ms=60000,  # 60秒
-                heartbeat_interval_ms=10000  # 10秒
+                enable_auto_commit=False,  # 手动提交，确保处理完成后才提交
+                max_poll_records=1,  # 每次只读取1条消息
+                max_poll_interval_ms=50000
             )
 
             # Producer for results
