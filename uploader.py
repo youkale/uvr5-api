@@ -75,10 +75,12 @@ class S3Uploader:
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
                 auto_offset_reset='latest',
-                enable_auto_commit=True,
-                auto_commit_interval_ms=1000
+                enable_auto_commit=False,  # 改为手动提交
+                max_poll_interval_ms=300000,  # 5分钟
+                session_timeout_ms=60000,  # 60秒
+                heartbeat_interval_ms=10000  # 10秒
             )
-
+            
             logger.info("Kafka consumer connected for results")
         except Exception as e:
             logger.error(f"Failed to connect to Kafka: {str(e)}")
@@ -257,9 +259,19 @@ class S3Uploader:
                         self._process_success_result(result)
                     else:
                         self._process_failure_result(result)
+                    
+                    # 处理完成后手动提交 offset
+                    self.consumer.commit()
+                    logger.info(f"[{task_uuid}] Offset committed successfully")
 
                 except Exception as e:
                     logger.error(f"Error processing result message: {str(e)}")
+                    # 即使失败也提交 offset，避免重复处理
+                    try:
+                        self.consumer.commit()
+                        logger.warning(f"Offset committed despite error (message will not be retried)")
+                    except Exception as commit_error:
+                        logger.error(f"Failed to commit offset: {commit_error}")
                     continue
 
         except KeyboardInterrupt:

@@ -77,8 +77,10 @@ class UVRProcessor:
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
                 auto_offset_reset='latest',
-                enable_auto_commit=True,
-                auto_commit_interval_ms=1000
+                enable_auto_commit=False,  # 改为手动提交，确保处理完成后才提交
+                max_poll_interval_ms=600000,  # 10分钟，处理音频可能需要较长时间
+                session_timeout_ms=60000,  # 60秒
+                heartbeat_interval_ms=10000  # 10秒
             )
 
             # Producer for results
@@ -241,10 +243,22 @@ class UVRProcessor:
                     task_uuid = task_data.get('task_uuid', 'unknown')
                     logger.info(f"Received task: {task_uuid}")
 
+                    # 处理任务
                     self._process_task(task_data)
+                    
+                    # 处理成功后手动提交 offset
+                    self.consumer.commit()
+                    logger.info(f"[{task_uuid}] Offset committed successfully")
 
                 except Exception as e:
                     logger.error(f"Error processing message: {str(e)}")
+                    # 即使处理失败也提交 offset，避免重复处理
+                    # 如果不想跳过失败的消息，可以不提交或实现重试逻辑
+                    try:
+                        self.consumer.commit()
+                        logger.warning(f"Offset committed despite error (message will not be retried)")
+                    except Exception as commit_error:
+                        logger.error(f"Failed to commit offset: {commit_error}")
                     continue
 
         except KeyboardInterrupt:
