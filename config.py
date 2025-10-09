@@ -11,7 +11,8 @@ BASIC_AUTH_PASSWORD = os.getenv('BASIC_AUTH_PASSWORD', 'password')
 KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
 KAFKA_TASK_TOPIC = os.getenv('KAFKA_TASK_TOPIC', 'uvr_tasks')
 KAFKA_RESULT_TOPIC = os.getenv('KAFKA_RESULT_TOPIC', 'uvr_results')
-KAFKA_GROUP_ID = os.getenv('KAFKA_GROUP_ID', 'uvr_processor')
+KAFKA_PROCESSOR_GROUP_ID = os.getenv('KAFKA_PROCESSOR_GROUP_ID', 'uvr_processor_group')
+KAFKA_UPLOADER_GROUP_ID = os.getenv('KAFKA_UPLOADER_GROUP_ID', 'uvr_uploader_group')
 
 # S3-Compatible Storage Configuration (支持 AWS S3, Cloudflare R2, MinIO 等)
 S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL')  # 可选，用于 R2 等 S3 兼容服务

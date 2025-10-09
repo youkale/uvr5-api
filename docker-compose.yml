@@ -49,7 +49,6 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TASK_TOPIC=${KAFKA_TASK_TOPIC:-uvr_tasks}
       - KAFKA_RESULT_TOPIC=${KAFKA_RESULT_TOPIC:-uvr_results}
-      - KAFKA_GROUP_ID=${KAFKA_GROUP_ID:-uvr_processor}
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - BASIC_AUTH_USERNAME=${BASIC_AUTH_USERNAME:-admin}
@@ -72,7 +71,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TASK_TOPIC=${KAFKA_TASK_TOPIC:-uvr_tasks}
       - KAFKA_RESULT_TOPIC=${KAFKA_RESULT_TOPIC:-uvr_results}
-      - KAFKA_GROUP_ID=${KAFKA_GROUP_ID:-uvr_processor}
+      - KAFKA_PROCESSOR_GROUP_ID=${KAFKA_PROCESSOR_GROUP_ID:-uvr_processor_group}
       - MODEL_NAME=${MODEL_NAME:-UVR-MDX-NET-Inst_HQ_4}
       - MODEL_FILE_DIR=/app/models
       - TEMP_DIR=/app/temp
@@ -92,7 +91,7 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_RESULT_TOPIC=${KAFKA_RESULT_TOPIC:-uvr_results}
-      - KAFKA_GROUP_ID=${KAFKA_GROUP_ID:-uvr_processor}
+      - KAFKA_UPLOADER_GROUP_ID=${KAFKA_UPLOADER_GROUP_ID:-uvr_uploader_group}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-auto}

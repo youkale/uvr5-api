@@ -58,7 +58,7 @@ class UVRProcessor:
             self.consumer = KafkaConsumer(
                 config.KAFKA_TASK_TOPIC,
                 bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS.split(','),
-                group_id=config.KAFKA_GROUP_ID,
+                group_id=config.KAFKA_PROCESSOR_GROUP_ID,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
                 auto_offset_reset='latest',
