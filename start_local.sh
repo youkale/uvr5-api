@@ -63,10 +63,10 @@ source .venv/bin/activate
 # 安装依赖
 if [ "$USE_UV" = true ]; then
     echo "📥 使用 uv 安装依赖..."
-    uv pip install -r requirements.txt
+    uv pip install -r requirements-gpu.txt
 else
     echo "📥 使用 pip 安装依赖..."
-    pip install -r requirements.txt
+    pip install -r requirements-gpu.txt
 fi
 
 echo ""

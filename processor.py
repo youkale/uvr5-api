@@ -84,19 +84,17 @@ class UVRProcessor:
             use_gpu, gpu_info = self._check_gpu_support()
             logger.info(f"Hardware acceleration: {gpu_info}")
 
-            # Configure Separator with GPU support if available
+            # Configure Separator
+            # Note: audio-separator automatically uses GPU if onnxruntime-gpu is installed
+            # and CUDAExecutionProvider is available. No explicit parameter needed.
             separator_kwargs = {
                 'log_level': logging.INFO,
                 'model_file_dir': config.MODEL_FILE_DIR,
                 'output_dir': config.OUTPUT_DIR
             }
 
-            # Enable GPU acceleration if available
             if use_gpu:
-                logger.info("🚀 Enabling GPU acceleration for audio separation")
-                # audio-separator will automatically use CUDA if onnxruntime-gpu is installed
-                # and CUDAExecutionProvider is available
-                separator_kwargs['enable_cuda'] = True
+                logger.info("🚀 GPU acceleration will be used automatically (onnxruntime-gpu detected)")
             else:
                 logger.info("Running on CPU mode")
 
