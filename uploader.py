@@ -89,7 +89,8 @@ class S3Uploader:
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
                 auto_offset_reset='latest',
-                enable_auto_commit=True
+                enable_auto_commit=False,  # 手动提交模式
+                max_poll_records=1  # 每次只消费一条记录
             )
 
             logger.info("Kafka consumer connected for results")
@@ -280,7 +281,13 @@ class S3Uploader:
 
                 except Exception as e:
                     logger.error(f"Error processing result message: {str(e)}")
-                    continue
+                finally:
+                    # 无论成功还是失败，都手动提交 offset
+                    try:
+                        self.consumer.commit()
+                        logger.debug("Offset committed successfully")
+                    except Exception as commit_error:
+                        logger.error(f"Failed to commit offset: {commit_error}")
 
         except Exception as e:
             if not self.shutdown_flag:
