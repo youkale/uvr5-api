@@ -1,54 +1,39 @@
 version: '3.8'
 
 services:
-  # Zookeeper for Kafka
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    hostname: zookeeper
-    container_name: uvr-zookeeper
+  # Redis for priority queue
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    container_name: uvr-redis
     ports:
-      - "2181:2181"
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+      - "6379:6379"
+    command: redis-server --appendonly yes
     volumes:
-      - zookeeper-data:/var/lib/zookeeper/data
-      - zookeeper-logs:/var/lib/zookeeper/log
-
-  # Kafka
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    hostname: kafka
-    container_name: uvr-kafka
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
-    volumes:
-      - kafka-data:/var/lib/kafka/data
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # UVR API Server
   api:
     build: .
     container_name: uvr-api
     depends_on:
-      - kafka
+      redis:
+        condition: service_healthy
     ports:
       - "${API_PORT:-8000}:8000"
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-      - KAFKA_TASK_TOPIC=${KAFKA_TASK_TOPIC:-uvr_tasks}
-      - KAFKA_RESULT_TOPIC=${KAFKA_RESULT_TOPIC:-uvr_results}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_TASK_QUEUE=${REDIS_TASK_QUEUE:-uvr_tasks}
+      - REDIS_RESULT_QUEUE=${REDIS_RESULT_QUEUE:-uvr_results}
+      - DEFAULT_PRIORITY=${DEFAULT_PRIORITY:-3}
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - BASIC_AUTH_USERNAME=${BASIC_AUTH_USERNAME:-admin}
@@ -66,12 +51,16 @@ services:
     build: .
     container_name: uvr-processor
     depends_on:
-      - kafka
+      redis:
+        condition: service_healthy
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-      - KAFKA_TASK_TOPIC=${KAFKA_TASK_TOPIC:-uvr_tasks}
-      - KAFKA_RESULT_TOPIC=${KAFKA_RESULT_TOPIC:-uvr_results}
-      - KAFKA_PROCESSOR_GROUP_ID=${KAFKA_PROCESSOR_GROUP_ID:-uvr_processor_group}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_TASK_QUEUE=${REDIS_TASK_QUEUE:-uvr_tasks}
+      - REDIS_RESULT_QUEUE=${REDIS_RESULT_QUEUE:-uvr_results}
+      - DEFAULT_PRIORITY=${DEFAULT_PRIORITY:-3}
       - MODEL_NAME=${MODEL_NAME:-UVR-MDX-NET-Inst_HQ_4}
       - MODEL_FILE_DIR=/app/models
       - TEMP_DIR=/app/temp
@@ -87,11 +76,16 @@ services:
     build: .
     container_name: uvr-uploader
     depends_on:
-      - kafka
+      redis:
+        condition: service_healthy
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-      - KAFKA_RESULT_TOPIC=${KAFKA_RESULT_TOPIC:-uvr_results}
-      - KAFKA_UPLOADER_GROUP_ID=${KAFKA_UPLOADER_GROUP_ID:-uvr_uploader_group}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_TASK_QUEUE=${REDIS_TASK_QUEUE:-uvr_tasks}
+      - REDIS_RESULT_QUEUE=${REDIS_RESULT_QUEUE:-uvr_results}
+      - DEFAULT_PRIORITY=${DEFAULT_PRIORITY:-3}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-auto}
@@ -105,6 +99,4 @@ services:
     command: ["python", "uploader.py"]
 
 volumes:
-  zookeeper-data:
-  zookeeper-logs:
-  kafka-data:
+  redis-data:

@@ -75,17 +75,18 @@ echo "✅ 环境准备完成！"
 echo "=================================================="
 echo ""
 
-# 检查 Kafka 是否运行
-echo "🔍 检查 Kafka 服务..."
-KAFKA_HOST=$(grep KAFKA_BOOTSTRAP_SERVERS .env 2>/dev/null | cut -d'=' -f2 | cut -d':' -f1 || echo "localhost")
-KAFKA_PORT=$(grep KAFKA_BOOTSTRAP_SERVERS .env 2>/dev/null | cut -d'=' -f2 | cut -d':' -f2 || echo "9092")
+# 检查 Redis 是否运行
+echo "🔍 检查 Redis 服务..."
+REDIS_HOST=$(grep REDIS_HOST .env 2>/dev/null | cut -d'=' -f2 || echo "localhost")
+REDIS_PORT=$(grep REDIS_PORT .env 2>/dev/null | cut -d'=' -f2 || echo "6379")
 
-if ! nc -z "$KAFKA_HOST" "$KAFKA_PORT" 2>/dev/null; then
-    echo "⚠️  警告: Kafka 服务未运行 ($KAFKA_HOST:$KAFKA_PORT)"
+if ! nc -z "$REDIS_HOST" "$REDIS_PORT" 2>/dev/null; then
+    echo "⚠️  警告: Redis 服务未运行 ($REDIS_HOST:$REDIS_PORT)"
     echo ""
-    echo "请先启动 Kafka："
-    echo "  方案1 - 使用 Docker: docker-compose up -d zookeeper kafka"
-    echo "  方案2 - 本地 Kafka: 启动本地 Kafka 服务"
+    echo "请先启动 Redis："
+    echo "  方案1 - 使用 Docker: docker run -d -p 6379:6379 --name redis redis:latest"
+    echo "  方案2 - 本地 Redis: redis-server"
+    echo "  方案3 - Homebrew (macOS): brew install redis && brew services start redis"
     echo ""
     read -p "是否继续启动服务? (y/n) " -n 1 -r
     echo

@@ -273,19 +273,22 @@ python uploader.py
 
 ```
 uvr_api/
-├── app.py              # Flask API 服务器
-├── processor.py        # 音频处理消费者
-├── uploader.py         # S3 上传和回调服务
-├── config.py           # 配置管理
-├── redis_queue.py      # Redis 优先级队列抽象
-├── pyproject.toml      # Python 依赖
-├── requirements.txt    # Python 依赖
-├── Dockerfile          # Docker 镜像
-├── docker-compose.yml  # 服务编排
-├── start.sh            # 启动脚本
-├── stop.sh             # 停止脚本
-├── test_api.sh         # API 测试脚本
-└── README.md           # 项目文档
+├── app.py                  # Flask API 服务器
+├── processor.py            # 音频处理消费者
+├── uploader.py             # S3 上传和回调服务
+├── config.py               # 配置管理
+├── redis_queue.py          # Redis 优先级队列抽象
+├── pyproject.toml          # Python 依赖
+├── requirements.txt        # Python 依赖
+├── Dockerfile              # Docker 镜像
+├── docker-compose.yml      # 服务编排（Redis）
+├── start.sh                # Docker 启动脚本
+├── stop.sh                 # Docker 停止脚本
+├── start_local.sh          # 本地启动脚本
+├── stop_local.sh           # 本地停止脚本
+├── check_redis_queue.sh    # Redis 队列状态检查
+├── test_api.sh             # API 测试脚本
+└── README.md               # 项目文档
 ```
 
 ## 🔍 日志查看
@@ -295,9 +298,35 @@ uvr_api/
 docker-compose logs -f
 
 # 查看特定服务
+docker-compose logs -f redis
 docker-compose logs -f api
 docker-compose logs -f processor
 docker-compose logs -f uploader
+```
+
+## 🔍 Redis 队列监控
+
+```bash
+# 查看队列状态
+./check_redis_queue.sh
+
+# 进入 Redis CLI (Docker)
+docker exec -it uvr-redis redis-cli
+
+# 进入 Redis CLI (本地)
+redis-cli
+
+# 查看队列大小
+ZCARD uvr_tasks      # 任务队列
+ZCARD uvr_results    # 结果队列
+
+# 查看队列内容
+ZRANGE uvr_tasks 0 -1 WITHSCORES
+ZRANGE uvr_results 0 -1 WITHSCORES
+
+# 清空队列（谨慎使用）
+DEL uvr_tasks
+DEL uvr_results
 ```
 
 ## ⚙️ 配置说明
