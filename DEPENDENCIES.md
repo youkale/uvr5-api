@@ -54,7 +54,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 #### 安装依赖
 
-**从 pyproject.toml 安装（推荐）：**
+本项目是**应用程序项目**，不是 Python 包，因此推荐直接从 requirements 文件安装：
+
 ```bash
 # 创建虚拟环境
 uv venv
@@ -62,18 +63,15 @@ uv venv
 # 激活虚拟环境
 source .venv/bin/activate
 
-# 安装项目（可编辑模式）
-uv pip install -e .
-```
-
-**从 requirements.txt 安装：**
-```bash
+# 安装依赖
 # CPU 版本
 uv pip install -r requirements.txt
 
 # GPU 版本（Linux CUDA）
 uv pip install -r requirements-gpu.txt
 ```
+
+**注意**：`pyproject.toml` 主要用于依赖版本管理和项目元数据。本项目不需要可编辑安装（`pip install -e .`）。
 
 ### 方法 2：使用 pip
 
@@ -84,11 +82,12 @@ python3 -m venv .venv
 # 激活虚拟环境
 source .venv/bin/activate
 
-# 从 pyproject.toml 安装
-pip install -e .
-
-# 或从 requirements.txt 安装
+# 安装依赖
+# CPU 版本
 pip install -r requirements.txt
+
+# GPU 版本（Linux CUDA）
+pip install -r requirements-gpu.txt
 ```
 
 ### 方法 3：使用 Docker
@@ -125,7 +124,7 @@ uv venv
 source .venv/bin/activate
 
 # 3. 安装依赖
-uv pip install -e .
+uv pip install -r requirements.txt
 
 # 4. 验证安装
 python -c "import redis; print('Redis OK')"
@@ -160,11 +159,8 @@ source .venv/bin/activate
 # 2. 卸载旧依赖
 pip uninstall kafka-python -y
 
-# 3. 安装新依赖
-uv pip install redis>=5.0.0
-
-# 或重新安装所有依赖
-uv pip install -e .
+# 3. 重新安装所有依赖
+uv pip install -r requirements.txt
 ```
 
 ## 🔍 依赖验证
@@ -273,10 +269,10 @@ pip install onnxruntime-gpu>=1.16.0
 
 ```bash
 # 使用 uv
-uv pip install --upgrade -e .
+uv pip install --upgrade -r requirements.txt
 
 # 使用 pip
-pip install --upgrade -e .
+pip install --upgrade -r requirements.txt
 ```
 
 ### 冻结依赖版本
