@@ -63,10 +63,19 @@ source .venv/bin/activate
 # 安装依赖
 if [ "$USE_UV" = true ]; then
     echo "📥 使用 uv 安装依赖..."
-    uv pip install -r requirements-gpu.txt
+    # 优先使用 pyproject.toml，如果失败则使用 requirements 文件
+    if [ -f "pyproject.toml" ]; then
+        uv pip install -e . || uv pip install -r requirements-gpu.txt
+    else
+        uv pip install -r requirements-gpu.txt
+    fi
 else
     echo "📥 使用 pip 安装依赖..."
-    pip install -r requirements-gpu.txt
+    if [ -f "pyproject.toml" ]; then
+        pip install -e . || pip install -r requirements-gpu.txt
+    else
+        pip install -r requirements-gpu.txt
+    fi
 fi
 
 echo ""

@@ -3,7 +3,7 @@
 
 flask>=3.0.0
 flask-httpauth>=4.8.0
-kafka-python>=2.0.2
+redis>=5.0.0
 boto3>=1.34.0
 requests>=2.31.0
 audio-separator>=0.17.0

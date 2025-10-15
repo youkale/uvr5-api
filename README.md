@@ -252,8 +252,25 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ### 安装依赖
 
+使用 uv（推荐）：
 ```bash
-uv pip install -r pyproject.toml
+# 从 pyproject.toml 安装（推荐）
+uv pip install -e .
+
+# 或从 requirements.txt 安装
+uv pip install -r requirements.txt
+
+# GPU 版本（Linux CUDA）
+uv pip install -r requirements-gpu.txt
+```
+
+使用 pip：
+```bash
+# 从 pyproject.toml 安装（推荐）
+pip install -e .
+
+# 或从 requirements.txt 安装
+pip install -r requirements.txt
 ```
 
 ### 运行单个服务
