@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 UVR Audio Processor Consumer
-Consumes tasks from Kafka, performs audio separation, and sends results
+Consumes tasks from Redis priority queue, performs audio separation, and sends results
 """
 
 import os
@@ -12,10 +12,9 @@ import signal
 import sys
 import requests
 import tempfile
-from kafka import KafkaConsumer, KafkaProducer
-from kafka.errors import KafkaError
 from audio_separator.separator import Separator
 import config
+from redis_queue import create_redis_client, RedisPriorityQueue
 
 # Configure logging
 logging.basicConfig(
@@ -30,8 +29,9 @@ class UVRProcessor:
     def __init__(self):
         """Initialize UVR processor with model loaded once"""
         self.separator = None
-        self.consumer = None
-        self.producer = None
+        self.redis_client = None
+        self.task_queue = None
+        self.result_queue = None
         self.shutdown_flag = False
 
         # 注册信号处理器用于优雅关闭
@@ -39,7 +39,7 @@ class UVRProcessor:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         self._load_model()
-        self._connect_kafka()
+        self._connect_redis()
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
@@ -126,33 +126,24 @@ class UVRProcessor:
             logger.error(f"You can download it using: python3 download_models.py")
             raise
 
-    def _connect_kafka(self):
-        """Initialize Kafka consumer and producer"""
+    def _connect_redis(self):
+        """Initialize Redis client and priority queues"""
         try:
-            # Consumer for tasks
-            self.consumer = KafkaConsumer(
-                config.KAFKA_TASK_TOPIC,
-                bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS.split(','),
-                group_id=config.KAFKA_PROCESSOR_GROUP_ID,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                key_deserializer=lambda k: k.decode('utf-8') if k else None,
-                auto_offset_reset='latest',
-                enable_auto_commit=False,  # 手动提交模式
-                max_poll_records=1  # 每次只消费一条记录
+            # Create Redis client
+            self.redis_client = create_redis_client(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                db=config.REDIS_DB,
+                password=config.REDIS_PASSWORD
             )
 
-            # Producer for results
-            self.producer = KafkaProducer(
-                bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS.split(','),
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                key_serializer=lambda k: k.encode('utf-8') if k else None,
-                retries=3,
-                acks='all'
-            )
+            # Initialize priority queues
+            self.task_queue = RedisPriorityQueue(self.redis_client, config.REDIS_TASK_QUEUE)
+            self.result_queue = RedisPriorityQueue(self.redis_client, config.REDIS_RESULT_QUEUE)
 
-            logger.info("Kafka connections established")
+            logger.info("Redis connections and queues initialized")
         except Exception as e:
-            logger.error(f"Failed to connect to Kafka: {str(e)}")
+            logger.error(f"Failed to connect to Redis: {str(e)}")
             raise
 
     # 下载功能已移到 API 层，此方法不再需要
@@ -223,12 +214,13 @@ class UVRProcessor:
         task_uuid = task_data['task_uuid']
         audio_path = task_data['audio_path']  # 改为直接使用本地路径
         hook_url = task_data['hook_url']
+        priority = task_data.get('priority', config.DEFAULT_PRIORITY)
 
         vocals_path = None
         instrumental_path = None
 
         try:
-            logger.info(f"[{task_uuid}] Processing task")
+            logger.info(f"[{task_uuid}] Processing task with priority {priority}")
             logger.info(f"[{task_uuid}] Audio file: {audio_path}")
 
             # 验证音频文件存在
@@ -238,31 +230,33 @@ class UVRProcessor:
             # Separate audio (直接使用已下载的文件)
             vocals_path, instrumental_path = self._separate_audio(audio_path, task_uuid)
 
-            # Send success result to result topic
+            # Send success result to result queue with same priority
             result = {
                 'task_uuid': task_uuid,
                 'success': True,
                 'vocals_path': vocals_path,
                 'instrumental_path': instrumental_path,
-                'hook_url': hook_url
+                'hook_url': hook_url,
+                'priority': priority
             }
 
-            self.producer.send(config.KAFKA_RESULT_TOPIC, key=task_uuid, value=result)
-            logger.info(f"[{task_uuid}] Success result sent to result topic")
+            self.result_queue.enqueue(result, priority=priority)
+            logger.info(f"[{task_uuid}] Success result sent to result queue with priority {priority}")
 
         except Exception as e:
             logger.error(f"[{task_uuid}] Task processing failed: {str(e)}")
 
-            # Send failure result
+            # Send failure result with same priority
             result = {
                 'task_uuid': task_uuid,
                 'success': False,
                 'error_message': str(e),
-                'hook_url': hook_url
+                'hook_url': hook_url,
+                'priority': priority
             }
 
-            self.producer.send(config.KAFKA_RESULT_TOPIC, key=task_uuid, value=result)
-            logger.info(f"[{task_uuid}] Failure result sent to result topic")
+            self.result_queue.enqueue(result, priority=priority)
+            logger.info(f"[{task_uuid}] Failure result sent to result queue with priority {priority}")
 
         finally:
             # Clean up input file
@@ -275,35 +269,49 @@ class UVRProcessor:
 
     def start(self):
         """Start consuming and processing tasks"""
-        logger.info("UVR Processor started, waiting for tasks...")
+        logger.info("UVR Processor started, waiting for tasks from Redis priority queue...")
+
+        consecutive_errors = 0
+        max_consecutive_errors = 10
 
         try:
-            for message in self.consumer:
-                # 检查关闭标志
-                if self.shutdown_flag:
-                    logger.info("Shutdown flag set, stopping message consumption")
-                    break
-
+            while not self.shutdown_flag:
                 try:
-                    task_data = message.value
+                    # Blocking dequeue with 5 second timeout
+                    task_data = self.task_queue.dequeue(timeout=5)
+
+                    if task_data is None:
+                        consecutive_errors = 0  # 重置错误计数
+                        continue  # No task available, continue polling
+
                     task_uuid = task_data.get('task_uuid', 'unknown')
-                    logger.info(f"Received task: {task_uuid}")
+                    priority = task_data.get('priority', config.DEFAULT_PRIORITY)
+                    logger.info(f"Received task: {task_uuid} with priority {priority}")
 
-                    # 处理任务
-                    self._process_task(task_data)
+                    try:
+                        # 处理任务
+                        self._process_task(task_data)
+                        logger.info(f"[{task_uuid}] Task completed successfully")
+                        consecutive_errors = 0  # 重置错误计数
 
-                    logger.info(f"[{task_uuid}] Task completed successfully")
+                    except Exception as e:
+                        logger.error(f"Error processing task {task_uuid}: {str(e)}")
+                        # 任务已经从队列中移除，错误已在 _process_task 中处理
 
                 except Exception as e:
-                    logger.error(f"Error processing message: {str(e)}")
-                finally:
-                    # 无论成功还是失败，都手动提交 offset
-                    try:
-                        self.consumer.commit()
-                        logger.debug("Offset committed successfully")
-                    except Exception as commit_error:
-                        logger.error(f"Failed to commit offset: {commit_error}")
+                    consecutive_errors += 1
+                    logger.error(f"Redis processor error ({consecutive_errors}/{max_consecutive_errors}): {e}")
 
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.critical(f"Too many consecutive errors ({consecutive_errors}), stopping processor")
+                        break
+
+                    # 根据错误次数调整休眠时间
+                    sleep_time = min(consecutive_errors * 2, 30)  # 最多休眠30秒
+                    time.sleep(sleep_time)
+
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt")
         except Exception as e:
             if not self.shutdown_flag:
                 logger.error(f"Processor error: {str(e)}")
@@ -314,26 +322,16 @@ class UVRProcessor:
 
     def close(self):
         """Close connections gracefully"""
-        logger.info("Closing Kafka connections...")
+        logger.info("Closing Redis connections...")
 
-        # 关闭 consumer
-        if self.consumer:
+        # 关闭 Redis client
+        if self.redis_client:
             try:
-                logger.info("Closing Kafka consumer...")
-                self.consumer.close()
-                logger.info("Kafka consumer closed")
+                logger.info("Closing Redis client...")
+                self.redis_client.close()
+                logger.info("Redis client closed")
             except Exception as e:
-                logger.error(f"Error closing consumer: {e}")
-
-        # Flush 并关闭 producer
-        if self.producer:
-            try:
-                logger.info("Flushing and closing Kafka producer...")
-                self.producer.flush(timeout=10)
-                self.producer.close()
-                logger.info("Kafka producer closed")
-            except Exception as e:
-                logger.error(f"Error closing producer: {e}")
+                logger.error(f"Error closing Redis client: {e}")
 
         logger.info("Processor shutdown complete")
 

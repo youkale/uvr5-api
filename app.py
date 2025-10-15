@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 UVR Audio Separation API Server
-Flask-based REST API with Basic Auth and Kafka integration
+Flask-based REST API with Basic Auth and Redis Priority Queue
 """
 
 import os
@@ -12,9 +12,8 @@ import logging
 import requests
 from flask import Flask, request, jsonify
 from flask_httpauth import HTTPBasicAuth
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
 import config
+from redis_queue import create_redis_client, RedisPriorityQueue
 
 # Configure logging
 logging.basicConfig(
@@ -27,28 +26,27 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 auth = HTTPBasicAuth()
 
-# Initialize Kafka producer
-kafka_producer = None
+# Initialize Redis client and task queue
+redis_client = None
+task_queue = None
 
-def get_kafka_producer():
-    """Get or create Kafka producer"""
-    global kafka_producer
-    if kafka_producer is None:
+def get_redis_queue():
+    """Get or create Redis task queue"""
+    global redis_client, task_queue
+    if redis_client is None or task_queue is None:
         try:
-            kafka_producer = KafkaProducer(
-                bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS.split(','),
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                key_serializer=lambda k: k.encode('utf-8') if k else None,
-                retries=3,
-                retry_backoff_ms=1000,
-                request_timeout_ms=30000,
-                acks='all'
+            redis_client = create_redis_client(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                db=config.REDIS_DB,
+                password=config.REDIS_PASSWORD
             )
-            logger.info("Kafka producer initialized successfully")
+            task_queue = RedisPriorityQueue(redis_client, config.REDIS_TASK_QUEUE)
+            logger.info("Redis task queue initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Kafka producer: {str(e)}")
+            logger.error(f"Failed to initialize Redis task queue: {str(e)}")
             raise
-    return kafka_producer
+    return task_queue
 
 @auth.verify_password
 def verify_password(username, password):
@@ -93,10 +91,31 @@ def download_audio(audio_url, task_uuid):
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint - no auth required"""
-    return jsonify({
+    health_status = {
         "status": "healthy",
-        "timestamp": int(time.time())
-    }), 200
+        "timestamp": int(time.time()),
+        "components": {}
+    }
+
+    # Check Redis connection
+    try:
+        if redis_client:
+            redis_client.ping()
+            queue_size = task_queue.size() if task_queue else 0
+            health_status['components']['redis'] = {
+                'status': 'healthy',
+                'task_queue_size': queue_size
+            }
+        else:
+            health_status['components']['redis'] = {'status': 'not_initialized'}
+    except Exception as e:
+        health_status['status'] = 'degraded'
+        health_status['components']['redis'] = {
+            'status': 'unhealthy',
+            'error': str(e)
+        }
+
+    return jsonify(health_status), 200
 
 @app.route('/generate', methods=['POST'])
 @auth.login_required
@@ -107,14 +126,16 @@ def generate():
     Request body:
     {
         "audio": "https://example.com/audio.wav",
-        "hook_url": "https://example.com/callback"
+        "hook_url": "https://example.com/callback",
+        "priority": 3  // Optional: 1-5, default=3 (1=lowest, 5=highest)
     }
 
     Response:
     {
         "message": "Task has been queued for processing",
         "status": "queued",
-        "task_uuid": "uuid-string"
+        "task_uuid": "uuid-string",
+        "priority": 3
     }
     """
     # Check request content type
@@ -130,12 +151,17 @@ def generate():
 
     audio_url = data.get('audio')
     hook_url = data.get('hook_url')
+    priority = data.get('priority', config.DEFAULT_PRIORITY)
 
     if not audio_url:
         return jsonify({"error": "audio field is required"}), 400
 
     if not hook_url:
         return jsonify({"error": "hook_url field is required"}), 400
+
+    # Validate priority
+    if not isinstance(priority, int) or priority < 1 or priority > 5:
+        return jsonify({"error": "priority must be an integer between 1 and 5 (1=lowest, 5=highest)"}), 400
 
     # Validate URLs
     if not audio_url.startswith(('http://', 'https://')):
@@ -162,32 +188,36 @@ def generate():
         'task_uuid': task_uuid,
         'audio_path': local_audio_path,  # 改为本地路径
         'hook_url': hook_url,
+        'priority': priority,
         'timestamp': int(time.time())
     }
 
-    # Send to Kafka
+    # Send to Redis priority queue
     try:
-        producer = get_kafka_producer()
-        future = producer.send(
-            config.KAFKA_TASK_TOPIC,
-            key=task_uuid,
-            value=task_data
-        )
-        # Wait for message to be sent
-        future.get(timeout=10)
-        logger.info(f"Task {task_uuid} queued successfully")
-    except KafkaError as e:
-        logger.error(f"Kafka error for task {task_uuid}: {str(e)}")
-        return jsonify({"error": "Failed to queue task"}), 500
+        queue = get_redis_queue()
+        success = queue.enqueue(task_data, priority=priority)
+
+        if not success:
+            raise Exception("Failed to enqueue task")
+
+        logger.info(f"Task {task_uuid} queued successfully with priority {priority}")
+
     except Exception as e:
-        logger.error(f"Unexpected error for task {task_uuid}: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
+        logger.error(f"Redis error for task {task_uuid}: {str(e)}")
+        # Clean up downloaded file on failure
+        if os.path.exists(local_audio_path):
+            try:
+                os.remove(local_audio_path)
+            except Exception:
+                pass
+        return jsonify({"error": "Failed to queue task"}), 500
 
     # Return response
     return jsonify({
         "message": "Task has been queued for processing",
         "status": "queued",
-        "task_uuid": task_uuid
+        "task_uuid": task_uuid,
+        "priority": priority
     }), 200
 
 @app.errorhandler(401)
@@ -208,10 +238,10 @@ def internal_error(error):
 
 def shutdown_handler():
     """Cleanup on shutdown"""
-    global kafka_producer
-    if kafka_producer:
-        kafka_producer.close()
-        logger.info("Kafka producer closed")
+    global redis_client
+    if redis_client:
+        redis_client.close()
+        logger.info("Redis client closed")
 
 if __name__ == '__main__':
     import atexit

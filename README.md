@@ -1,13 +1,13 @@
 # UVR Audio Separation API Service
 
-基于UVR5框架的音频分离API服务，使用Flask、Kafka和AWS S3构建的完整异步处理系统。
+基于UVR5框架的音频分离API服务，使用Flask、Redis优先级队列和AWS S3构建的完整异步处理系统。
 
 ## 🎯 功能特性
 
 - ✅ 使用 **UVR-MDX-NET-Inst_HQ_4** 模型进行高质量音频分离
 - ✅ 基于 **Flask** 的 REST API
 - ✅ **Basic Auth** 认证保护
-- ✅ **Kafka** 异步任务队列
+- ✅ **Redis** 优先级队列（支持任务优先级 1-5）
 - ✅ 自动上传到 **AWS S3**
 - ✅ **Webhook** 回调通知
 - ✅ **Docker** 容器化部署
@@ -18,18 +18,25 @@
 ```
 客户端请求
     ↓
-Flask API (认证 + 生成UUID)
+Flask API (认证 + 生成UUID + 优先级)
     ↓
-Kafka任务队列
+Redis优先级任务队列
     ↓
 音频处理器 (下载 + UVR分离)
     ↓
-Kafka结果队列
+Redis优先级结果队列
     ↓
 S3上传器 (上传 + Webhook回调)
     ↓
 清理临时文件
 ```
+
+### 优先级队列说明
+
+- 使用 Redis ZSet 实现优先级队列
+- 优先级范围：1-5（1=最低优先级，5=最高优先级，默认=3）
+- 分数计算：`timestamp * (6 - priority)`，分数越低优先级越高
+- 支持阻塞式获取任务，保证按优先级顺序处理
 
 ## 🚀 快速开始
 
@@ -40,7 +47,7 @@ S3上传器 (上传 + Webhook回调)
 
 **本地运行模式：**
 - Python 3.11+
-- Kafka 服务
+- Redis 服务
 - (推荐) uv 包管理器
 
 ---
@@ -88,7 +95,7 @@ S3_BASE_URL=https://your-bucket-name.s3.amazonaws.com
 ```
 
 服务将自动：
-- 启动 Zookeeper 和 Kafka
+- 启动 Redis 服务
 - 启动 Flask API 服务器
 - 启动音频处理器
 - 启动 S3 上传服务
@@ -115,14 +122,19 @@ curl -u admin:password http://localhost:8000/health
 
 ### 方式二：本地直接运行（不使用 Docker）
 
-#### 1. 启动 Kafka
+#### 1. 启动 Redis
 
 ```bash
-# 选项 A: 使用 Docker 仅启动 Kafka
-docker-compose up -d zookeeper kafka
+# 选项 A: 使用 Docker 启动 Redis
+docker run -d -p 6379:6379 --name redis redis:latest
 
-# 选项 B: 使用本地 Kafka 服务
-# 启动你的本地 Kafka
+# 选项 B: 使用本地 Redis 服务
+# 启动你的本地 Redis
+redis-server
+
+# 选项 C: 使用 Homebrew (macOS)
+brew install redis
+brew services start redis
 ```
 
 #### 2. 配置环境变量
@@ -190,7 +202,8 @@ Content-Type: application/json
 
 {
   "audio": "https://example.com/audio.wav",
-  "hook_url": "https://example.com/webhook"
+  "hook_url": "https://example.com/webhook",
+  "priority": 3  // Optional: 1-5, 默认为3 (1=最低, 5=最高)
 }
 ```
 
@@ -199,7 +212,8 @@ Content-Type: application/json
 {
   "message": "Task has been queued for processing",
   "status": "queued",
-  "task_uuid": "eb98d47d-aad8-4282-b7e4-3cf115a54c40"
+  "task_uuid": "eb98d47d-aad8-4282-b7e4-3cf115a54c40",
+  "priority": 3
 }
 ```
 
@@ -263,7 +277,9 @@ uvr_api/
 ├── processor.py        # 音频处理消费者
 ├── uploader.py         # S3 上传和回调服务
 ├── config.py           # 配置管理
+├── redis_queue.py      # Redis 优先级队列抽象
 ├── pyproject.toml      # Python 依赖
+├── requirements.txt    # Python 依赖
 ├── Dockerfile          # Docker 镜像
 ├── docker-compose.yml  # 服务编排
 ├── start.sh            # 启动脚本
@@ -292,7 +308,13 @@ docker-compose logs -f uploader
 |--------|------|--------|
 | `BASIC_AUTH_USERNAME` | API 认证用户名 | `admin` |
 | `BASIC_AUTH_PASSWORD` | API 认证密码 | `password` |
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka 服务器地址 | `localhost:9092` |
+| `REDIS_HOST` | Redis 服务器地址 | `localhost` |
+| `REDIS_PORT` | Redis 端口 | `6379` |
+| `REDIS_DB` | Redis 数据库编号 | `0` |
+| `REDIS_PASSWORD` | Redis 密码（可选） | - |
+| `REDIS_TASK_QUEUE` | 任务队列名称 | `uvr_tasks` |
+| `REDIS_RESULT_QUEUE` | 结果队列名称 | `uvr_results` |
+| `DEFAULT_PRIORITY` | 默认任务优先级 | `3` |
 | `AWS_ACCESS_KEY_ID` | S3 访问密钥 | - |
 | `AWS_SECRET_ACCESS_KEY` | S3 密钥 | - |
 | `AWS_REGION` | S3 区域 | `auto` |
@@ -353,9 +375,10 @@ S3_PUBLIC_DOMAIN=http://localhost:9000/your-bucket-name
 
 ## 🐛 故障排除
 
-### 问题：Kafka 连接失败
-- 确保 Kafka 服务正常运行
-- 检查 `KAFKA_BOOTSTRAP_SERVERS` 配置
+### 问题：Redis 连接失败
+- 确保 Redis 服务正常运行：`redis-cli ping`
+- 检查 `REDIS_HOST` 和 `REDIS_PORT` 配置
+- 如果使用密码，确保 `REDIS_PASSWORD` 正确
 
 ### 问题：S3 上传失败
 - 验证 AWS 凭证是否正确
@@ -391,7 +414,8 @@ response = requests.post(
     auth=HTTPBasicAuth('admin', 'password'),
     json={
         'audio': 'https://example.com/audio.wav',
-        'hook_url': 'https://example.com/webhook'
+        'hook_url': 'https://example.com/webhook',
+        'priority': 5  # Optional: 1-5, 默认为3
     }
 )
 
@@ -406,7 +430,8 @@ curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
   -d '{
     "audio": "https://example.com/audio.wav",
-    "hook_url": "https://example.com/webhook"
+    "hook_url": "https://example.com/webhook",
+    "priority": 5
   }'
 ```
 
@@ -414,11 +439,81 @@ curl -X POST http://localhost:8000/generate \
 
 - **Web Framework**: Flask 3.0+
 - **Authentication**: Flask-HTTPAuth
-- **Message Queue**: Apache Kafka
+- **Message Queue**: Redis (优先级队列)
 - **Audio Processing**: audio-separator (UVR5)
 - **Cloud Storage**: AWS S3 (boto3)
 - **Container**: Docker & Docker Compose
 - **Package Manager**: uv
+
+## 🔄 从 Kafka 迁移到 Redis
+
+本项目已从 Kafka 迁移到 Redis 优先级队列。主要变更：
+
+### 主要改进
+
+1. **优先级支持**：支持任务优先级（1-5），高优先级任务优先处理
+2. **轻量级**：Redis 比 Kafka 更轻量，部署更简单
+3. **更低延迟**：Redis 的响应时间更短
+4. **简化部署**：不再需要 Zookeeper 和 Kafka
+
+### 迁移步骤
+
+如果你从旧版本升级：
+
+1. **安装 Redis**
+```bash
+# Docker
+docker run -d -p 6379:6379 --name redis redis:latest
+
+# macOS
+brew install redis
+brew services start redis
+
+# Ubuntu/Debian
+sudo apt-get install redis-server
+sudo systemctl start redis
+```
+
+2. **更新环境变量**
+```bash
+# 移除 Kafka 配置
+# KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+
+# 添加 Redis 配置
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+REDIS_TASK_QUEUE=uvr_tasks
+REDIS_RESULT_QUEUE=uvr_results
+DEFAULT_PRIORITY=3
+```
+
+3. **更新依赖**
+```bash
+pip install -r requirements.txt
+# 或
+uv pip install -r requirements.txt
+```
+
+4. **重启服务**
+```bash
+./restart_local.sh
+```
+
+### API 变更
+
+`/generate` 端点新增可选参数：
+- `priority`: 整数，范围 1-5（1=最低，5=最高，默认=3）
+
+示例：
+```json
+{
+  "audio": "https://example.com/audio.wav",
+  "hook_url": "https://example.com/webhook",
+  "priority": 5
+}
+```
 
 ## 📄 许可证
 

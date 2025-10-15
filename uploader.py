@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 S3 Uploader and Webhook Notifier
-Consumes results from Kafka, uploads to S3, and sends webhook callbacks
+Consumes results from Redis priority queue, uploads to S3, and sends webhook callbacks
 """
 
 import os
@@ -13,8 +13,8 @@ import sys
 import requests
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from kafka import KafkaConsumer
 import config
+from redis_queue import create_redis_client, RedisPriorityQueue
 
 # Configure logging
 logging.basicConfig(
@@ -27,9 +27,10 @@ class S3Uploader:
     """S3 uploader and webhook notifier with graceful shutdown"""
 
     def __init__(self):
-        """Initialize S3 client and Kafka consumer"""
+        """Initialize S3 client and Redis consumer"""
         self.s3_client = None
-        self.consumer = None
+        self.redis_client = None
+        self.result_queue = None
         self.shutdown_flag = False
 
         # 注册信号处理器用于优雅关闭
@@ -37,7 +38,7 @@ class S3Uploader:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         self._init_s3()
-        self._connect_kafka()
+        self._connect_redis()
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
@@ -79,23 +80,23 @@ class S3Uploader:
             logger.error(f"Unexpected S3 error: {str(e)}")
             raise
 
-    def _connect_kafka(self):
-        """Initialize Kafka consumer for results"""
+    def _connect_redis(self):
+        """Initialize Redis client and result queue"""
         try:
-            self.consumer = KafkaConsumer(
-                config.KAFKA_RESULT_TOPIC,
-                bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS.split(','),
-                group_id=config.KAFKA_UPLOADER_GROUP_ID,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                key_deserializer=lambda k: k.decode('utf-8') if k else None,
-                auto_offset_reset='latest',
-                enable_auto_commit=False,  # 手动提交模式
-                max_poll_records=1  # 每次只消费一条记录
+            # Create Redis client
+            self.redis_client = create_redis_client(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                db=config.REDIS_DB,
+                password=config.REDIS_PASSWORD
             )
 
-            logger.info("Kafka consumer connected for results")
+            # Initialize result queue
+            self.result_queue = RedisPriorityQueue(self.redis_client, config.REDIS_RESULT_QUEUE)
+
+            logger.info("Redis client and result queue initialized")
         except Exception as e:
-            logger.error(f"Failed to connect to Kafka: {str(e)}")
+            logger.error(f"Failed to connect to Redis: {str(e)}")
             raise
 
     def _generate_s3_url(self, s3_key):
@@ -120,39 +121,74 @@ class S3Uploader:
         # 默认使用标准 AWS S3 URL
         return f"https://{config.S3_BUCKET_NAME}.s3.{config.AWS_REGION}.amazonaws.com/{s3_key}"
 
-    def _upload_to_s3(self, file_path, s3_key):
-        """Upload file to S3-compatible storage and return public URL"""
-        try:
-            logger.info(f"Uploading {file_path} to S3 as {s3_key}")
+    def _upload_to_s3(self, file_path, s3_key, max_retries=3):
+        """
+        Upload file to S3-compatible storage with retry logic
 
-            # 上传文件配置
-            extra_args = {'ContentType': 'audio/wav'}
+        Args:
+            file_path: Local file path
+            s3_key: S3 object key
+            max_retries: Maximum number of retry attempts (default: 3)
 
-            # 某些 S3 兼容服务（如 R2）不支持 ACL，需要通过 bucket 策略设置公共访问
+        Returns:
+            str: Public URL of uploaded file
+        """
+        last_error = None
+
+        for attempt in range(max_retries):
             try:
-                extra_args['ACL'] = 'public-read'
-            except Exception:
-                logger.info("ACL not supported, using bucket policy for public access")
+                logger.info(f"Uploading {file_path} to S3 as {s3_key} (attempt {attempt + 1}/{max_retries})")
 
-            self.s3_client.upload_file(
-                file_path,
-                config.S3_BUCKET_NAME,
-                s3_key,
-                ExtraArgs=extra_args
-            )
+                # 上传文件配置
+                extra_args = {'ContentType': 'audio/wav'}
 
-            # 生成公共访问 URL
-            url = self._generate_s3_url(s3_key)
+                # 某些 S3 兼容服务（如 R2）不支持 ACL，需要通过 bucket 策略设置公共访问
+                try:
+                    extra_args['ACL'] = 'public-read'
+                except Exception:
+                    if attempt == 0:  # Only log once
+                        logger.info("ACL not supported, using bucket policy for public access")
 
-            logger.info(f"File uploaded: {url}")
-            return url
+                self.s3_client.upload_file(
+                    file_path,
+                    config.S3_BUCKET_NAME,
+                    s3_key,
+                    ExtraArgs=extra_args
+                )
 
-        except ClientError as e:
-            logger.error(f"S3 upload failed: {str(e)}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected upload error: {str(e)}")
-            raise
+                # 生成公共访问 URL
+                url = self._generate_s3_url(s3_key)
+
+                logger.info(f"File uploaded successfully: {url}")
+                return url
+
+            except ClientError as e:
+                last_error = e
+                error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+                logger.warning(f"S3 upload failed (attempt {attempt + 1}/{max_retries}): {error_code} - {str(e)}")
+
+                # 某些错误不值得重试（如权限错误、bucket不存在等）
+                non_retryable_errors = ['NoSuchBucket', 'AccessDenied', 'InvalidAccessKeyId', 'SignatureDoesNotMatch']
+                if error_code in non_retryable_errors:
+                    logger.error(f"Non-retryable S3 error: {error_code}")
+                    raise
+
+                if attempt < max_retries - 1:
+                    sleep_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.info(f"Retrying in {sleep_time} seconds...")
+                    time.sleep(sleep_time)
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Unexpected upload error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+
+                if attempt < max_retries - 1:
+                    sleep_time = 2 ** attempt
+                    time.sleep(sleep_time)
+
+        # All retries failed
+        logger.error(f"All {max_retries} upload attempts failed for {s3_key}")
+        raise last_error if last_error else Exception("S3 upload failed")
 
     def _send_webhook(self, hook_url, payload, max_retries=3):
         """Send webhook with retry logic"""
@@ -190,24 +226,41 @@ class S3Uploader:
                     logger.warning(f"Failed to cleanup {file_path}: {e}")
 
     def _process_success_result(self, result):
-        """Process successful separation result"""
+        """
+        Process successful separation result
+
+        流程：
+        1. 上传文件到S3（带重试）
+        2. 发送webhook回调（带重试）
+        3. 清理本地文件
+
+        注意：任务已从队列移除，即使失败也不会重新入队，避免重复上传
+        """
         task_uuid = result['task_uuid']
         vocals_path = result['vocals_path']
         instrumental_path = result['instrumental_path']
         hook_url = result['hook_url']
+        priority = result.get('priority', config.DEFAULT_PRIORITY)
+
+        vocals_url = None
+        instrumental_url = None
+        upload_success = False
 
         try:
-            logger.info(f"[{task_uuid}] Processing success result")
+            logger.info(f"[{task_uuid}] Processing success result (priority: {priority})")
 
-            # Upload vocals to S3
+            # Step 1: Upload vocals to S3 (with retry)
             vocals_s3_key = f"{task_uuid}_vocals.wav"
-            vocals_url = self._upload_to_s3(vocals_path, vocals_s3_key)
+            vocals_url = self._upload_to_s3(vocals_path, vocals_s3_key, max_retries=3)
 
-            # Upload instrumental to S3
+            # Step 2: Upload instrumental to S3 (with retry)
             instrumental_s3_key = f"{task_uuid}_instrumental.wav"
-            instrumental_url = self._upload_to_s3(instrumental_path, instrumental_s3_key)
+            instrumental_url = self._upload_to_s3(instrumental_path, instrumental_s3_key, max_retries=3)
 
-            # Send success callback
+            upload_success = True
+            logger.info(f"[{task_uuid}] Both files uploaded to S3 successfully")
+
+            # Step 3: Send success callback (with retry)
             callback_payload = {
                 'task_uuid': task_uuid,
                 'status': 'success',
@@ -216,18 +269,35 @@ class S3Uploader:
                 'instrumental': instrumental_url
             }
 
-            self._send_webhook(hook_url, callback_payload)
-            logger.info(f"[{task_uuid}] Success callback sent")
+            try:
+                self._send_webhook(hook_url, callback_payload)
+                logger.info(f"[{task_uuid}] Success callback sent")
+            except Exception as webhook_error:
+                # Webhook失败但S3已上传成功
+                # 不应该抛出异常导致发送failure回调，因为文件已经成功上传
+                logger.error(f"[{task_uuid}] Webhook failed but files are uploaded to S3: {str(webhook_error)}")
+                logger.error(f"[{task_uuid}] Files available at: vocals={vocals_url}, instrumental={instrumental_url}")
+                # 不重新抛出异常，避免发送错误的failure回调
 
         except Exception as e:
             logger.error(f"[{task_uuid}] Failed to process success result: {str(e)}")
 
-            # Send failure callback
-            self._send_failure_callback(task_uuid, hook_url, f"Upload/callback failed: {str(e)}")
+            # 只有在上传失败时才发送failure回调
+            if not upload_success:
+                logger.info(f"[{task_uuid}] S3 upload failed, sending failure callback")
+                try:
+                    self._send_failure_callback(task_uuid, hook_url, f"S3 upload failed: {str(e)}")
+                except Exception as callback_error:
+                    logger.error(f"[{task_uuid}] Failed to send failure callback: {str(callback_error)}")
+            else:
+                # 上传成功但其他步骤失败（这种情况已在上面的webhook异常处理中覆盖）
+                logger.error(f"[{task_uuid}] Files uploaded but post-processing failed: {str(e)}")
 
         finally:
-            # Clean up files
+            # Step 4: Clean up local files (always execute)
+            # 无论成功失败都清理本地文件，避免磁盘空间占用
             self._cleanup_files(vocals_path, instrumental_path)
+            logger.info(f"[{task_uuid}] Result processing completed")
 
     def _send_failure_callback(self, task_uuid, hook_url, error_message):
         """Send failure callback"""
@@ -250,45 +320,61 @@ class S3Uploader:
         task_uuid = result['task_uuid']
         error_message = result.get('error_message', 'Unknown error')
         hook_url = result['hook_url']
+        priority = result.get('priority', config.DEFAULT_PRIORITY)
 
-        logger.info(f"[{task_uuid}] Processing failure result")
+        logger.info(f"[{task_uuid}] Processing failure result (priority: {priority})")
         self._send_failure_callback(task_uuid, hook_url, error_message)
 
     def start(self):
         """Start consuming results and uploading"""
-        logger.info("S3 Uploader started, waiting for results...")
+        logger.info("S3 Uploader started, waiting for results from Redis priority queue...")
+
+        consecutive_errors = 0
+        max_consecutive_errors = 10
 
         try:
-            for message in self.consumer:
-                # 检查关闭标志
-                if self.shutdown_flag:
-                    logger.info("Shutdown flag set, stopping message consumption")
-                    break
-
+            while not self.shutdown_flag:
                 try:
-                    result = message.value
+                    # Blocking dequeue with 5 second timeout
+                    result = self.result_queue.dequeue(timeout=5)
+
+                    if result is None:
+                        consecutive_errors = 0  # 重置错误计数
+                        continue  # No result available, continue polling
+
                     task_uuid = result.get('task_uuid', 'unknown')
                     success = result.get('success', False)
+                    priority = result.get('priority', config.DEFAULT_PRIORITY)
 
-                    logger.info(f"Received result: {task_uuid} (success: {success})")
+                    logger.info(f"Received result: {task_uuid} (success: {success}, priority: {priority})")
 
-                    if success:
-                        self._process_success_result(result)
-                    else:
-                        self._process_failure_result(result)
+                    try:
+                        if success:
+                            self._process_success_result(result)
+                        else:
+                            self._process_failure_result(result)
 
-                    logger.info(f"[{task_uuid}] Result processed successfully")
+                        logger.info(f"[{task_uuid}] Result processed successfully")
+                        consecutive_errors = 0  # 重置错误计数
+
+                    except Exception as e:
+                        logger.error(f"Error processing result {task_uuid}: {str(e)}")
+                        # 任务已经从队列中移除
 
                 except Exception as e:
-                    logger.error(f"Error processing result message: {str(e)}")
-                finally:
-                    # 无论成功还是失败，都手动提交 offset
-                    try:
-                        self.consumer.commit()
-                        logger.debug("Offset committed successfully")
-                    except Exception as commit_error:
-                        logger.error(f"Failed to commit offset: {commit_error}")
+                    consecutive_errors += 1
+                    logger.error(f"Redis uploader error ({consecutive_errors}/{max_consecutive_errors}): {e}")
 
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.critical(f"Too many consecutive errors ({consecutive_errors}), stopping uploader")
+                        break
+
+                    # 根据错误次数调整休眠时间
+                    sleep_time = min(consecutive_errors * 2, 30)  # 最多休眠30秒
+                    time.sleep(sleep_time)
+
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt")
         except Exception as e:
             if not self.shutdown_flag:
                 logger.error(f"Uploader error: {str(e)}")
@@ -299,16 +385,16 @@ class S3Uploader:
 
     def close(self):
         """Close connections gracefully"""
-        logger.info("Closing Kafka connections...")
+        logger.info("Closing Redis connections...")
 
-        # 关闭 consumer
-        if self.consumer:
+        # 关闭 Redis client
+        if self.redis_client:
             try:
-                logger.info("Closing Kafka consumer...")
-                self.consumer.close()
-                logger.info("Kafka consumer closed")
+                logger.info("Closing Redis client...")
+                self.redis_client.close()
+                logger.info("Redis client closed")
             except Exception as e:
-                logger.error(f"Error closing consumer: {e}")
+                logger.error(f"Error closing Redis client: {e}")
 
         logger.info("Uploader shutdown complete")
 

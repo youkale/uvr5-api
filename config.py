@@ -7,12 +7,16 @@ load_dotenv()
 BASIC_AUTH_USERNAME = os.getenv('BASIC_AUTH_USERNAME', 'admin')
 BASIC_AUTH_PASSWORD = os.getenv('BASIC_AUTH_PASSWORD', 'password')
 
-# Kafka Configuration
-KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
-KAFKA_TASK_TOPIC = os.getenv('KAFKA_TASK_TOPIC', 'uvr_tasks')
-KAFKA_RESULT_TOPIC = os.getenv('KAFKA_RESULT_TOPIC', 'uvr_results')
-KAFKA_PROCESSOR_GROUP_ID = os.getenv('KAFKA_PROCESSOR_GROUP_ID', 'uvr_processor_group')
-KAFKA_UPLOADER_GROUP_ID = os.getenv('KAFKA_UPLOADER_GROUP_ID', 'uvr_uploader_group')
+# Redis Configuration
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+REDIS_DB = int(os.getenv('REDIS_DB', '0'))
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD')  # Optional
+REDIS_TASK_QUEUE = os.getenv('REDIS_TASK_QUEUE', 'uvr_tasks')
+REDIS_RESULT_QUEUE = os.getenv('REDIS_RESULT_QUEUE', 'uvr_results')
+
+# Priority Queue Configuration
+DEFAULT_PRIORITY = int(os.getenv('DEFAULT_PRIORITY', '3'))  # 1-5, default 3 (medium)
 
 # S3-Compatible Storage Configuration (支持 AWS S3, Cloudflare R2, MinIO 等)
 S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL')  # 可选，用于 R2 等 S3 兼容服务
